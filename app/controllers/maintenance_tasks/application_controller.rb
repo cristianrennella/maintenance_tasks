@@ -4,7 +4,7 @@ module MaintenanceTasks
   # Base class for all controllers used by this engine.
   #
   # Can be extended to add different authentication and authorization code.
-  class ApplicationController < ActionController::Base
+  class ApplicationController < ApplicationController
     before_action :require_admin
 
     BULMA_CDN = "https://cdn.jsdelivr.net"
