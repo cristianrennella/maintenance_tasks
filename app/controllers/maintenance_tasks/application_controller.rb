@@ -5,6 +5,8 @@ module MaintenanceTasks
   #
   # Can be extended to add different authentication and authorization code.
   class ApplicationController < ActionController::Base
+    before_action :require_admin
+
     BULMA_CDN = "https://cdn.jsdelivr.net"
 
     content_security_policy do |policy|
@@ -27,5 +29,11 @@ module MaintenanceTasks
     end
 
     protect_from_forgery with: :exception
+
+    private
+
+    def require_admin
+      redirect_to main_app.root_path, flash: {danger: "No estas autorizado."} unless current_user&.admin?
+    end
   end
 end
