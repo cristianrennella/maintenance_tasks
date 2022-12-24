@@ -29,6 +29,7 @@ module MaintenanceTasks
     STOPPING_STATUSES = [
       :pausing,
       :cancelling,
+      :cancelled,
     ]
     COMPLETED_STATUSES = [:succeeded, :errored, :cancelled]
     COMPLETED_RUNS_LIMIT = 10
@@ -40,6 +41,7 @@ module MaintenanceTasks
       Task.available_tasks.map(&:to_s)
     } }
     validate :csv_attachment_presence, on: :create
+    validate :csv_content_type, on: :create
     validate :validate_task_arguments, on: :create
 
     attr_readonly :task_name
@@ -48,6 +50,7 @@ module MaintenanceTasks
     serialize :arguments, JSON
 
     scope :active, -> { where(status: ACTIVE_STATUSES) }
+    scope :completed, -> { where(status: COMPLETED_STATUSES) }
 
     # Ensure ActiveStorage is in use before preloading the attachments
     scope :with_attached_csv, -> do
@@ -116,7 +119,7 @@ module MaintenanceTasks
         id,
         tick_count: number_of_ticks,
         time_running: duration,
-        touch: true
+        touch: true,
       )
       if locking_enabled?
         locking_column = self.class.locking_column
@@ -137,7 +140,7 @@ module MaintenanceTasks
         backtrace: MaintenanceTasks.backtrace_cleaner.clean(error.backtrace),
         ended_at: Time.now,
       )
-      run_task_callbacks(:error)
+      run_error_callback
     rescue ActiveRecord::StaleObjectError
       reload_status
       retry
@@ -168,8 +171,10 @@ module MaintenanceTasks
       self
     end
 
-    # Returns whether the Run is stopping, which is defined as
-    # having a status of pausing or cancelled.
+    # Returns whether the Run is stopping, which is defined as having a status
+    # of pausing or cancelling. The status of cancelled is also considered
+    # stopping since a Run can be cancelled while its job still exists in the
+    # queue, and we want to handle it the same way as a cancelling run.
     #
     # @return [Boolean] whether the Run is stopping.
     def stopping?
@@ -259,7 +264,7 @@ module MaintenanceTasks
     #   specified by the Task.
     def start(count)
       update!(started_at: Time.now, tick_total: count)
-      run_task_callbacks(:start)
+      task.run_callbacks(:start)
     rescue ActiveRecord::StaleObjectError
       reload_status
       retry
@@ -272,6 +277,7 @@ module MaintenanceTasks
         self.ended_at = Time.now
       elsif pausing?
         self.status = :paused
+      elsif cancelled?
       else
         self.status = :interrupted
       end
@@ -342,6 +348,18 @@ module MaintenanceTasks
       nil
     end
 
+    # Performs validation on the content type of the :csv_file attachment.
+    # A Run for a Task that uses CsvCollection must have a present :csv_file
+    # and a content type of "text/csv" to be valid. The appropriate error is
+    # added if the Run does not meet the above criteria.
+    def csv_content_type
+      if csv_file.present? && csv_file.content_type != "text/csv"
+        errors.add(:csv_file, "must be a CSV")
+      end
+    rescue Task::NotFoundError
+      nil
+    end
+
     # Support iterating over ActiveModel::Errors in Rails 6.0 and Rails 6.1+.
     # To be removed when Rails 6.0 is no longer supported.
     if Rails::VERSION::STRING.match?(/^6.0/)
@@ -354,7 +372,7 @@ module MaintenanceTasks
             .map { |attribute, message| "#{attribute.inspect} #{message}" }
           errors.add(
             :arguments,
-            "are invalid: #{error_messages.join("; ")}"
+            "are invalid: #{error_messages.join("; ")}",
           )
         end
       rescue Task::NotFoundError
@@ -370,7 +388,7 @@ module MaintenanceTasks
             .map { |error| "#{error.attribute.inspect} #{error.message}" }
           errors.add(
             :arguments,
-            "are invalid: #{error_messages.join("; ")}"
+            "are invalid: #{error_messages.join("; ")}",
           )
         end
       rescue Task::NotFoundError
@@ -412,6 +430,12 @@ module MaintenanceTasks
 
     def run_task_callbacks(callback)
       task.run_callbacks(callback)
+    rescue Task::NotFoundError
+      nil
+    end
+
+    def run_error_callback
+      task.run_callbacks(:error)
     rescue
       nil
     end

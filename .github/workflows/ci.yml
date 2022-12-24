@@ -7,6 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Ruby ${{ matrix.ruby }} / ${{ matrix.gemfile }} / ${{ matrix.database }}
     strategy:
+      fail-fast: false
       matrix:
         gemfile: [Gemfile, gemfiles/rails_6_0.gemfile, gemfiles/rails_6_1.gemfile, gemfiles/rails_edge.gemfile]
         ruby: ["2.7", "3.0", "3.1"]
@@ -26,6 +27,8 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
+        cache-version: 1
+        rubygems: ${{ matrix.ruby == '2.7' && 'latest' || 'default' }}
     - name: Rails version
       if: ${{ matrix.gemfile == 'gemfiles/rails_edge.gemfile' }}
       run: bundle info rails | head -1

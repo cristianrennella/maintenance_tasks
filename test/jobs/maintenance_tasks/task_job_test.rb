@@ -31,6 +31,20 @@ module MaintenanceTasks
       assert_no_enqueued_jobs
     end
 
+    test ".perform doesn't run a cancelled job" do
+      freeze_time
+      TaskJob.perform_later(@run)
+      @run.cancel
+      travel Run::STUCK_TASK_TIMEOUT
+      @run.cancel # force cancel the Run
+      assert_predicate @run, :cancelled?
+      Maintenance::TestTask.any_instance.expects(:process).never
+
+      assert_nothing_raised do
+        perform_enqueued_jobs
+      end
+    end
+
     test ".perform_now persists ended_at when the Run is cancelled" do
       freeze_time
       Maintenance::TestTask.any_instance.expects(:process).once.with do
@@ -96,7 +110,7 @@ module MaintenanceTasks
       assert_equal 1, @run.reload.tick_count
     end
 
-    test ".perform_now persists started_at and updates tick_total when the job starts" do
+    test ".perform_now persists started_at when the job starts" do
       freeze_time
       Maintenance::TestTask.any_instance.expects(:process).once.with do
         @run.cancelling!
@@ -105,7 +119,6 @@ module MaintenanceTasks
       TaskJob.perform_now(@run)
 
       assert_equal Time.now, @run.reload.started_at
-      assert_equal 2, @run.tick_total
     end
 
     test ".perform_now updates Run to running when job starts performing" do
@@ -245,7 +258,7 @@ module MaintenanceTasks
 
       run = Run.new(task_name: "Maintenance::ImportPostsTask")
       run.csv_file.attach(
-        { io: File.open(file_fixture("sample.csv")), filename: "sample.csv" }
+        { io: File.open(file_fixture("sample.csv")), filename: "sample.csv" },
       )
       run.save
       TaskJob.perform_now(run)
@@ -268,7 +281,7 @@ module MaintenanceTasks
 
       run = Run.new(task_name: "Maintenance::BatchImportPostsTask")
       run.csv_file.attach(
-        { io: File.open(file_fixture("sample.csv")), filename: "sample.csv" }
+        { io: File.open(file_fixture("sample.csv")), filename: "sample.csv" },
       )
       run.save
       TaskJob.perform_now(run)
@@ -440,7 +453,7 @@ module MaintenanceTasks
 
       run = Run.create!(
         task_name: "Maintenance::ParamsTask",
-        arguments: { post_ids: post.id.to_s }
+        arguments: { post_ids: post.id.to_s },
       )
       TaskJob.perform_now(run)
 
@@ -565,6 +578,44 @@ module MaintenanceTasks
       assert_predicate(@run.reload, :succeeded?)
     ensure
       CustomTaskJob.race_condition_prepended_after_hook = nil
+    end
+
+    test ".perform_now bubbles up callback errors" do
+      Maintenance::CallbackTestTask
+        .any_instance
+        .expects(:after_start_callback)
+        .raises("Callback error!")
+
+      Maintenance::CallbackTestTask.any_instance.expects(:process).never
+
+      run = Run.create!(task_name: "Maintenance::CallbackTestTask")
+      run.expects(:persist_error).with do |exception|
+        assert_equal "Callback error!", exception.message
+      end
+
+      TaskJob.perform_now(run)
+    end
+
+    test "Active Record Relation tasks have their count calculated implicitly" do
+      run = Run.create!(task_name: "Maintenance::UpdatePostsTask")
+
+      Maintenance::UpdatePostsTask.any_instance.expects(:process).once.with do
+        run.cancelling!
+      end
+
+      TaskJob.perform_now(run)
+
+      assert_equal 2, run.reload.tick_total
+    end
+
+    test "array-based tasks have their count calculated implicitly" do
+      Maintenance::TestTask.any_instance.expects(:process).once.with do
+        @run.cancelling!
+      end
+
+      TaskJob.perform_now(@run)
+
+      assert_equal 2, @run.reload.tick_total
     end
   end
 end
