@@ -5,7 +5,7 @@ module MaintenanceTasks
   #
   # Can be extended to add different authentication and authorization code.
   class ApplicationController < ApplicationController
-    before_action :require_admin
+    before_action :require_admin_or_finance
 
     BULMA_CDN = "https://cdn.jsdelivr.net"
 
@@ -31,8 +31,10 @@ module MaintenanceTasks
 
     private
 
-    def require_admin
-      redirect_to main_app.root_path, flash: {danger: "No estas autorizado."} unless current_user&.admin?
+    def require_admin_or_finance
+      unless current_user&.admin?  || current_user&.finances?
+        redirect_to main_app.root_path, flash: {danger: "No estas autorizado."}
+      end
     end
   end
 end
